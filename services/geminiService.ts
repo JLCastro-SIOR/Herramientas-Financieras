@@ -3,9 +3,11 @@ import { GoogleGenAI } from "@google/genai";
 import { ComparisonResult } from "../types";
 
 export const getExpertAdvice = async (results: ComparisonResult) => {
+  // Always use { apiKey: process.env.API_KEY } for initialization
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   // Condensamos los datos al máximo para ahorrar tokens de entrada
+  // Fixed: Replaced incorrect property 'monthlyPensionToday' with 'monthlyPension' as defined in types.ts
   const prompt = `
     DATA:
     ACTUAL: $${results.current.monthlyPension.toFixed(0)}/mes, ${results.current.totalWeeks}sem.
@@ -26,6 +28,7 @@ export const getExpertAdvice = async (results: ComparisonResult) => {
         thinkingConfig: { thinkingBudget: 0 } // Desactiva razonamiento extendido para ahorrar tiempo y tokens
       },
     });
+    // Use .text property directly, do not call as a method
     return response.text;
   } catch (error) {
     console.error("Gemini Error:", error);

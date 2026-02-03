@@ -14,17 +14,18 @@ export interface PensionInputs {
 
 export interface Modalidad40Inputs {
   enabled: boolean;
+  startAge: number;
   investmentMonths: number;
   retroactiveMonths: number;
-  salaryInUMAs: number; // Max 25
+  salaryInUMAs: number;
+  continueWorking: boolean;
 }
 
 export interface CalculationResult {
-  monthlyPension: number;
-  annualPension: number;
-  pensionPercentage: number;
+  monthlyPension: number; // Valor nominal (pesos que recibirá en su cuenta)
   totalWeeks: number;
-  finalDailySalary: number;
+  finalAverageSalary: number;
+  pensionPercentage: number;
   isMinimumGuaranteed: boolean;
   breakdown: {
     cuantiaBasica: number;
@@ -37,7 +38,7 @@ export interface CalculationResult {
 
 export interface InvestmentDesglose {
   total: number;
-  lumpSum: number; // Pago inicial único por retroactivo
+  lumpSum: number;
   monthlyRemaining: number;
 }
 

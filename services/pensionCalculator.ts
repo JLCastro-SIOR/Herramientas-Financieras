@@ -10,29 +10,62 @@ export const calculatePension = (
   inputs: PensionInputs, 
   mod40: Modalidad40Inputs
 ): CalculationResult => {
-  const { currentDailySalary, currentWeeks, retirementAge, baseUMA, inflationRate, minWage } = inputs;
+  const { currentDailySalary, currentWeeks, retirementAge, baseUMA, inflationRate, minWage, currentAge } = inputs;
   const inflationDec = inflationRate / 100;
+  const yearsUntilRetirement = Math.max(0, retirementAge - currentAge);
   
-  const yearsToRetirement = Math.max(0, retirementAge - inputs.currentAge);
-  const projectedUMA = baseUMA * Math.pow(1 + inflationDec, yearsToRetirement);
+  // 1. Proyecciones Nominales al Retiro
+  const projectedUMAatRetirement = baseUMA * Math.pow(1 + inflationDec, yearsUntilRetirement);
+  const projectedMinWageAtRetirement = minWage * Math.pow(1 + inflationDec, yearsUntilRetirement);
 
-  // 1. Semanas Totales
-  const additionalWeeks = mod40.enabled 
-    ? Math.floor((mod40.investmentMonths + mod40.retroactiveMonths) * 4.34) 
-    : 0;
-  const totalWeeks = currentWeeks + additionalWeeks;
+  // 2. Cálculo de Semanas Totales
+  let totalWeeksAtRetirement = currentWeeks;
 
-  // 2. Salario Promedio (Últimas 250 semanas)
-  let finalDailySalary = currentDailySalary;
   if (mod40.enabled) {
-    const mod40Daily = mod40.salaryInUMAs * baseUMA; 
-    const weightsMod40 = Math.min(250, additionalWeeks);
-    const weightsCurrent = Math.max(0, 250 - weightsMod40);
-    finalDailySalary = ((currentDailySalary * weightsCurrent) + (mod40Daily * weightsMod40)) / 250;
+    // Escenario M40:
+    const yearsToStart = Math.max(0, mod40.startAge - currentAge);
+    
+    // Semanas por seguir trabajando con patrón ANTES de iniciar M40
+    if (mod40.continueWorking) {
+      totalWeeksAtRetirement += Math.floor(yearsToStart * 52);
+    }
+    
+    // Semanas por pago de Modalidad 40
+    const m40Weeks = Math.floor((mod40.investmentMonths + mod40.retroactiveMonths) * 4.34);
+    totalWeeksAtRetirement += m40Weeks;
+  } else {
+    // Escenario Base:
+    // Si el usuario marca que sigue cotizando, sumamos las semanas 
+    // desde hoy hasta la edad de inicio de pagos (startAge).
+    if (mod40.continueWorking) {
+      const yearsToStart = Math.max(0, mod40.startAge - currentAge);
+      totalWeeksAtRetirement += Math.floor(yearsToStart * 52);
+    }
+    // Si no marca seguir cotizando, se queda con las semanas actuales (congelado).
   }
 
-  // 3. Cuantía Básica e Incrementos
-  const ratio = finalDailySalary / projectedUMA;
+  // 3. Salario Promedio de las últimas 250 semanas (Nominal)
+  let finalAverageSalary = 0;
+
+  if (!mod40.enabled) {
+    // Sin estrategia: Salario actual
+    finalAverageSalary = currentDailySalary;
+  } else {
+    // Con Modalidad 40: Promedio ponderado
+    const m40Weeks = Math.floor((mod40.investmentMonths + mod40.retroactiveMonths) * 4.34);
+    const weightsM40 = Math.min(250, m40Weeks);
+    const weightsPatron = Math.max(0, 250 - weightsM40);
+
+    const yearsToStart = Math.max(0, mod40.startAge - currentAge);
+    const umaAtStart = baseUMA * Math.pow(1 + inflationDec, yearsToStart);
+    const m40DailySalary = mod40.salaryInUMAs * umaAtStart;
+
+    finalAverageSalary = ((m40DailySalary * weightsM40) + (currentDailySalary * weightsPatron)) / 250;
+  }
+
+  // 4. Cálculo de Cuantía (Art. 167 LSS 1973)
+  const ratio = finalAverageSalary / projectedUMAatRetirement;
+  
   let cuantiaBasicaPct = 13.62;
   let incrementoAnualPct = 2.435;
 
@@ -44,63 +77,57 @@ export const calculatePension = (
     }
   }
 
-  const cuantiaBasicaDiaria = finalDailySalary * (cuantiaBasicaPct / 100);
-  const extraWeeks = Math.max(0, totalWeeks - 500);
+  const cuantiaBasicaDiaria = finalAverageSalary * (cuantiaBasicaPct / 100);
+  const extraWeeks = Math.max(0, totalWeeksAtRetirement - 500);
   const totalIncrements = Math.floor(extraWeeks / 52);
-  const incrementoAnualDiario = finalDailySalary * (incrementoAnualPct / 100);
+  const incrementoAnualDiario = finalAverageSalary * (incrementoAnualPct / 100);
 
   let pensionBaseAnual = (cuantiaBasicaDiaria * 365) + (incrementoAnualDiario * 365 * totalIncrements);
   
-  // 4. Factor Fox (11% incremento Decreto 2004)
   const foxFactor = pensionBaseAnual * 0.11;
   pensionBaseAnual += foxFactor;
 
-  // 5. Asignaciones Familiares o Ayuda por Soledad (Art. 164 LSS 1973)
+  // 5. Asignaciones Familiares
   let familyBonusPct = 0;
   let isSoledad = false;
 
-  if (inputs.hasSpouse) {
-    familyBonusPct += 0.15;
-  }
+  if (inputs.hasSpouse) familyBonusPct += 0.15;
   
+  // Asignación por hijos (10% por cada uno)
   familyBonusPct += (inputs.childrenUnder25 * 0.10);
 
-  // Si no hay esposa ni hijos, checamos padres o soledad
+  // Si no hay esposa ni hijos, ayuda asistencial por soledad
   if (!inputs.hasSpouse && inputs.childrenUnder25 === 0) {
     if (inputs.hasParentsDependent) {
       familyBonusPct += 0.10;
     } else {
-      // AYUDA POR SOLEDAD: 15% si no tiene a nadie
       familyBonusPct = 0.15;
       isSoledad = true;
     }
   }
 
   const familyAssignment = pensionBaseAnual * familyBonusPct;
-  let totalConAsignaciones = pensionBaseAnual + familyAssignment;
+  let totalAnualPreEdad = pensionBaseAnual + familyAssignment;
 
-  // 6. Factor de Edad (Cesantía/Vejez)
+  // 6. Factor por Edad
   const ageFactor = AGE_PENSION_PERCENTAGE[retirementAge] || 1.0;
-  let totalAnnual = totalConAsignaciones * ageFactor;
+  let finalAnnualNominal = totalAnualPreEdad * ageFactor;
 
-  // 7. Pensión Mínima Garantizada L73
-  const monthlyMinPension = (minWage * 30.41) * 1.11;
-  const annualMinPension = monthlyMinPension * 12;
-
+  // 7. Pensión Mínima Garantizada
+  const monthlyMinNominal = (projectedMinWageAtRetirement * 30.41) * 1.11;
+  let finalMonthlyNominal = finalAnnualNominal / 12;
   let isMinimumGuaranteed = false;
-  let finalMonthlyPension = totalAnnual / 12;
 
-  if (finalMonthlyPension < monthlyMinPension) {
-    finalMonthlyPension = monthlyMinPension;
+  if (finalMonthlyNominal < monthlyMinNominal) {
+    finalMonthlyNominal = monthlyMinNominal;
     isMinimumGuaranteed = true;
   }
 
   return {
-    monthlyPension: finalMonthlyPension,
-    annualPension: finalMonthlyPension * 12,
+    monthlyPension: finalMonthlyNominal,
+    totalWeeks: totalWeeksAtRetirement,
+    finalAverageSalary,
     pensionPercentage: ageFactor * 100,
-    totalWeeks,
-    finalDailySalary,
     isMinimumGuaranteed,
     breakdown: {
       cuantiaBasica: cuantiaBasicaDiaria * 365,
@@ -112,48 +139,28 @@ export const calculatePension = (
   };
 };
 
-export const calculateInvestmentCost = (mod40: Modalidad40Inputs, baseUMA: number, inflationRate: number): InvestmentDesglose => {
+export const calculateInvestmentCost = (mod40: Modalidad40Inputs, baseUMA: number, inflationRate: number, currentAge: number): InvestmentDesglose => {
   if (!mod40.enabled) return { total: 0, lumpSum: 0, monthlyRemaining: 0 };
   
-  let lumpSum = 0;
-  let monthlyTotalFuture = 0;
   const inflationDec = inflationRate / 100;
-  const surchargeRate = 0.0147; 
-
-  let retroYear = new Date().getFullYear();
-  let retroMonth = new Date().getMonth();
-  let retroUma = baseUMA;
-
+  const yearsToStart = Math.max(0, mod40.startAge - currentAge);
+  const umaAtStart = baseUMA * Math.pow(1 + inflationDec, yearsToStart);
+  
+  let lumpSum = 0;
   for (let m = 1; m <= mod40.retroactiveMonths; m++) {
-    retroMonth--;
-    if (retroMonth < 0) {
-      retroMonth = 11;
-      retroYear--;
-      retroUma = retroUma / (1 + inflationDec);
-    }
-
-    const costPct = GET_MOD40_PERCENTAGE(retroYear);
-    const baseMonthly = mod40.salaryInUMAs * retroUma * 30.4 * costPct;
-    const surcharges = baseMonthly * (surchargeRate * m);
-    const inflationAdjustment = baseMonthly * (inflationDec / 12 * m);
-    lumpSum += baseMonthly + surcharges + inflationAdjustment;
+    const costPct = GET_MOD40_PERCENTAGE(new Date().getFullYear());
+    const baseMonthly = mod40.salaryInUMAs * baseUMA * 30.4 * costPct;
+    lumpSum += baseMonthly * 1.0147; 
   }
 
-  let currentYear = new Date().getFullYear();
-  let currentMonth = new Date().getMonth();
-  let currentUma = baseUMA;
-
+  let monthlyTotalNominal = 0;
   for (let m = 0; m < mod40.investmentMonths; m++) {
-    if (currentMonth === 1) currentUma = currentUma * (1 + inflationDec);
-    const costPct = GET_MOD40_PERCENTAGE(currentYear);
-    const monthlyPayment = mod40.salaryInUMAs * currentUma * 30.4 * costPct;
-    monthlyTotalFuture += monthlyPayment;
-    currentMonth++;
-    if (currentMonth > 11) {
-      currentMonth = 0;
-      currentYear++;
-    }
+    const yearOffset = Math.floor(m / 12);
+    const actualYear = new Date().getFullYear() + Math.floor(yearsToStart) + yearOffset;
+    const costPct = GET_MOD40_PERCENTAGE(actualYear);
+    const effectiveUmaForCost = umaAtStart * Math.pow(1 + inflationDec, yearOffset);
+    monthlyTotalNominal += mod40.salaryInUMAs * effectiveUmaForCost * 30.4 * costPct;
   }
 
-  return { total: lumpSum + monthlyTotalFuture, lumpSum, monthlyRemaining: monthlyTotalFuture };
+  return { total: lumpSum + monthlyTotalNominal, lumpSum, monthlyRemaining: monthlyTotalNominal };
 };
